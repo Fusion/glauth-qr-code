@@ -1,0 +1,48 @@
+debug = true
+#syslog = true
+
+# yubikeyclientid = "yubi-api-clientid"
+# yubikeysecret = "yubi-api-secret"
+
+[ldap]
+  enabled = true
+  listen = "0.0.0.0:389"
+
+[ldaps]
+  enabled = true
+  listen = "0.0.0.0:636"
+  cert = "certs/server.crt"
+  key = "certs/server.key"
+
+[backend]
+  datastore = "config"
+  baseDN = "dc=voilaweb,dc=com"
+
+[[users]]
+  name = "chrisfr"
+  unixid = 5001
+  primarygroup = 5501
+  passsha256 = "4f50d27f7155b9fd511f2d5fbb44dd491586b77cdbff1c110474898b3f1987c2"
+  otpsecret = "JNVWM5TCOBYFQ32W"
+
+
+[[users]]
+  name = "doink"
+  unixid = 5001
+  primarygroup = 5501
+  passsha256 = "4f50d27f7155b9fd511f2d5fbb44dd491586b77cdbff1c110474898b3f1987c2"
+
+[[groups]]
+  name = "wheel"
+  unixid = 5501
+
+[[groups]]
+  name = "svcaccts"
+  unixid = 5502
+
+[api]
+  enabled = false
+  tls = false # enable TLS for production!!
+  listen = "localhost:5555"
+  cert = "cert.pem"
+  key = "key.pem"
