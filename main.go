@@ -6,6 +6,7 @@ package main
 
 import (
   "os"
+  "os/user"
   "github.com/op/go-logging"
   "database/sql"
   _ "github.com/mattn/go-sqlite3"
@@ -19,8 +20,14 @@ import (
   "encoding/base64"
   "crypto/sha256"
   "github.com/BurntSushi/toml"
+  "github.com/urfave/cli"
   qrcode "github.com/skip2/go-qrcode"
   uuid   "github.com/satori/go.uuid"
+  "gopkg.in/src-d/go-git.v4"
+  "gopkg.in/src-d/go-git.v4/storage/filesystem"
+  "gopkg.in/src-d/go-billy.v4/osfs"
+  "gopkg.in/src-d/go-git.v4/plumbing/cache"
+  "gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
 
@@ -28,11 +35,13 @@ func main() {
 
   const HOME_URL = "http://192.168.1.89:8080"
   const ISSUER_NAME = "VwbLabs"
-  const CONFIG_FILE = "../config/cfr.cfg"
+  const CONFIG_PATH = "../config"
+  const CONFIG_FILE = "cfr.cfg"
+  const CONFIG_FILE_PATH = CONFIG_PATH + "/" + CONFIG_FILE
   const APP_NAME = "totpqrapp"
 
   correct_account_pattern, _ := regexp.Compile("[^a-zA-Z0-9-_]+")
-  log := logging.MustGetLogger(APP_NAME)                                    
+  log := logging.MustGetLogger(APP_NAME)
 
 // ░░░█░█░█▀▀░█░░░█▀█░█▀▀░█▀▄░█▀▀░░
 // ░░░█▀█░█▀▀░█░░░█▀▀░█▀▀░█▀▄░▀▀█░░
@@ -118,13 +127,62 @@ func main() {
 
   readConfig := func() (*configData, bool) {
     var config configData
-    _, err := toml.DecodeFile(CONFIG_FILE, &config)
+    _, err := toml.DecodeFile(CONFIG_FILE_PATH, &config)
     if err != nil {
       log.Error("Error decoding config")
       fmt.Printf(err.Error())
       return nil, false
     }
     return &config, true
+  }
+
+
+  writeConfig := func(config *configData) {
+    r, err := git.PlainOpen(CONFIG_PATH)
+    if err != nil {
+      fs := osfs.New(CONFIG_PATH)
+      dot, _ := fs.Chroot(".git")
+      storage := filesystem.NewStorage(dot, cache.NewObjectLRUDefault())
+      git.Init(storage, fs)
+
+      r, err = git.PlainOpen(CONFIG_PATH)
+      if err != nil {
+        log.Error("Error opening config directory.")
+        fmt.Printf(err.Error())
+        return
+      }
+
+      w, _ := r.Worktree()
+      w.Add(CONFIG_FILE)
+      w.Commit("Initial Commit -- Automated",  &git.CommitOptions{
+        Author: &object.Signature{
+          Name:  "totpqrapp",
+          Email: "support@voilaweb.com",
+          When:  time.Now(),
+        },
+      })
+    }
+
+    file, err := os.Create(CONFIG_FILE_PATH)
+    if err != nil {
+      log.Error("Error writing config")
+      fmt.Printf(err.Error())
+      return
+    }
+    defer file.Close()
+    toml.NewEncoder(file).Encode(config)
+
+    user, err := user.Current()
+
+    w, _ := r.Worktree()
+    w.Add(CONFIG_FILE)
+    w.Commit("Iterative Save -- Automated",  &git.CommitOptions{
+      Author: &object.Signature{
+        Name:  fmt.Sprintf("%s (%s)", user.Username, user.Uid),
+        Email: "support@voilaweb.com",
+        When:  time.Now(),
+      },
+    })
   }
 
 
@@ -144,15 +202,15 @@ func main() {
 
   invite := func(w http.ResponseWriter, r *http.Request) {
     tmpl := template.Must(template.ParseFiles("assets/invite.html"))
-  
+
     values := r.URL.Query()
     raw_account, ok := values["account"]
-    if ok == false {
+    if !ok {
       http.Error(w,  "You forgot to define 'account'", http.StatusInternalServerError)
       return
     }
     account := correct_account_pattern.ReplaceAllString(raw_account[0], "")
-  
+
     db, err := sql.Open("sqlite3", "./data/invites.db")
     if err != nil {
       log.Error("Error opening database")
@@ -160,22 +218,22 @@ func main() {
       return
     }
     defer db.Close()
-  
+
     // Create db if necessary
     statement, _ := db.Prepare("CREATE TABLE IF NOT EXISTS invitees (id INTEGER PRIMARY KEY, account TEXT, token TEXT, created DATETIME DEFAULT CURRENT_TIMESTAMP, used BOOLEAN DEFAULT 0)")
     statement.Exec()
     statement, _ = db.Prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_account on invitees(account)")
     statement.Exec()
-  
+
     // Purge old invites
     statement, _ = db.Prepare("DELETE FROM invitees WHERE (created <= datetime('now', '-10 days'))")
     statement.Exec()
-  
+
     // Proper invite insert
     token, _ := uuid.NewV4()
     statement, _ = db.Prepare("INSERT OR REPLACE INTO invitees (account, token) VALUES (?, ?)")
     statement.Exec(account, token)
-  
+
     log.Notice(fmt.Sprintf("Generated invitee key for account %s", account))
 
     data := InvitePageData{
@@ -199,7 +257,7 @@ func main() {
 
     values := r.URL.Query()
     raw_token, ok := values["token"]
-    if ok == false {
+    if !ok {
       http.Error(w,  "You forgot to define 'token'", http.StatusInternalServerError)
       return
     }
@@ -227,7 +285,7 @@ func main() {
     values := r.URL.Query()
     raw_token, ok := values["token"]
     if !ok {
-      http.Error(w,  "You forgot to define 'account'", http.StatusInternalServerError)
+      http.Error(w,  "You forgot to define 'token'", http.StatusInternalServerError)
       return
     }
     token := correct_account_pattern.ReplaceAllString(raw_token[0], "")
@@ -303,32 +361,66 @@ func main() {
   }
 
 
-  encodeUserInfo := func(pass string) {
-    encPass := sha256.Sum256([]byte(pass))
+  encodeUserSecret := func(c *cli.Context) error {
     // at least 128 bits long after encoding...
     encOtp  := base32.StdEncoding.EncodeToString([]byte(randomString(10)))
-    fmt.Printf("\nHere is a possible configuration for a LDAP TOTP user:\n\n")
-    fmt.Printf("  passsha256 = \"%x\"\n  otpsecret = \"%s\"\n\n", encPass, encOtp)
+
+    if account := c.String("account"); account != "" {
+      config, ok := readConfig()
+      if !ok {
+        return cli.NewExitError("Unable to read configuration file.", 1)
+      }
+      modified := false
+      for idx, user := range config.Users {
+        if user.Name == account {
+          config.Users[idx].Otpsecret = encOtp
+          modified = true
+          break
+        }
+      }
+      if modified {
+        writeConfig(config)
+      }
+    } else {
+      fmt.Printf("\nHere is a possible configuration for a LDAP TOTP user:\n\n")
+      fmt.Printf("  otpsecret = \"%s\"\n\n", encOtp)
+    }
+    return nil
+  }
+
+  encodeUserPassword := func(c *cli.Context) error {
+    if c.NArg() != 1 {
+      return cli.NewExitError("Please pass a cleartext password.", 1)
+    }
+    pass := c.Args().Get(0)
+    encPass := sha256.Sum256([]byte(pass))
+
+    if account := c.String("account"); account != "" {
+      config, ok := readConfig()
+      if !ok {
+        return cli.NewExitError("Unable to read configuration file.", 1)
+      }
+      modified := false
+      for idx, user := range config.Users {
+        if user.Name == account {
+          config.Users[idx].Passsha256 = fmt.Sprintf("%x", encPass)
+          modified = true
+          break
+        }
+      }
+      if modified {
+        writeConfig(config)
+      }
+    } else {
+      fmt.Printf("\nHere is a possible configuration for a LDAP user:\n\n")
+      fmt.Printf("  passsha256 = \"%x\"\n\n", encPass)
+    }
+    return nil
   }
 
 
-// ░░░█▄█░█▀█░▀█▀░█▀█░░
-// ░░░█░█░█▀█░░█░░█░█░░
-// ░░░▀░▀░▀░▀░▀▀▀░▀░▀░░
 
-  if len(os.Args) > 1 {
-    if os.Args[1] == "encode" {
-      if len(os.Args) != 3 {
-        fmt.Printf("Syntax: encode password\n")
-      } else {
-        if len(os.Args[2]) < 4 {
-            fmt.Printf("Please, 4 characters or more!\n")
-        } else {
-          encodeUserInfo(os.Args[2])
-        }
-      }
-    }
-  } else {
+  serve := func(c *cli.Context) error {
     init()
 
     http.HandleFunc("/onboard", onboard)
@@ -341,8 +433,48 @@ func main() {
 
     log.Notice("== Starting web server ==")
 
-    if err := http.ListenAndServe(":8080", nil); err != nil {
-      panic(err)
-    }
+    return http.ListenAndServe(":8080", nil)
+  }
+
+
+// ░░░█▄█░█▀█░▀█▀░█▀█░░
+// ░░░█░█░█▀█░░█░░█░█░░
+// ░░░▀░▀░▀░▀░▀▀▀░▀░▀░░
+
+  app := cli.NewApp()
+  app.Version = "0.9.0"
+  app.Commands = []cli.Command {
+    {
+      Name: "serve",
+      Usage: "Run web server",
+      Action:  serve,
+    },
+    {
+      Name: "secret",
+      Usage: "Display or set a secret config string",
+      Action:  encodeUserSecret,
+      Flags: []cli.Flag {
+        cli.StringFlag {
+          Name: "account",
+          Value: "",
+          Usage: "Set account's secret in config file",
+        },
+      },
+    },
+    {
+      Name: "pass",
+      Usage: "Display or set a password config string",
+      Action:  encodeUserPassword,
+      Flags: []cli.Flag {
+        cli.StringFlag {
+          Name: "account",
+          Value: "",
+          Usage: "Set account's password in config file",
+        },
+      },
+    },
+  }
+  if err := app.Run(os.Args); err != nil {
+    log.Fatal(err)
   }
 }

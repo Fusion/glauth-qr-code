@@ -7,24 +7,30 @@ build:
 	GOOS=linux GOARCH=amd64 go build -o bin/ws ${BUILD_FILES}
 
 run:
-	./bin/ws
+	./bin/ws serve
 
-setup: getdeps qr sqlite uuid log toml
+setup: getdeps getdepqr getdepsqlite getdepuuid getdeplog getdeptoml getdepcli getdepgit
 
 getdeps:
 	go get -d ./...
 
-qr:
+getdepqr:
 	go get -u github.com/skip2/go-qrcode/...
 
-sqlite:
+getdepsqlite:
 	go get -u github.com/mattn/go-sqlite3/...
 
-uuid:
+getdepuuid:
 	go get -u github.com/satori/go.uuid/...
 
-log:
+getdeplog:
 	go get -u github.com/op/go-logging/...
 
-toml:
+getdeptoml:
 	go get -u github.com/BurntSushi/toml/...
+
+getdepcli:
+	go get -u github.com/urfave/cli/...
+
+getdepgit:
+	go get -u gopkg.in/src-d/go-git.v4/...
