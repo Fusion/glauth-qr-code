@@ -98,8 +98,11 @@ func main() {
   }
   type configUsersData struct {
     Name string
+    Givenname string
+    Sn string
     Unixid int
     Primarygroup int
+    Mail string
     Passsha256 string
     Otpsecret string
   }
